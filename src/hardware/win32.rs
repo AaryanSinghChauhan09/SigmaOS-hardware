@@ -1,4 +1,4 @@
-use crate::klib::HashMap;
+use std::collections::HashMap;
 use std::string::{String, ToString};
 use std::vec::Vec;
 // SigmaOS Safe Win32 Compatibility Subsystem (SigmaWin)

@@ -4,4 +4,5 @@
 pub mod hardware;
 pub mod device;
 
-pub use hardware::HardwareManager;
+pub use hardware::*;
+pub use device::*;
