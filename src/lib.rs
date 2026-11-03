@@ -1,8 +1,12 @@
-//! SigmaOS Hardware
-//! Hardware abstraction and device management
+use anyhow::Result;
+use serde::Serialize;
 
-pub mod hardware;
-pub mod device;
+#[derive(Debug, Clone, Serialize)]
+pub struct Config { pub enabled: bool }
+impl Default for Config { fn default() -> Self { Self { enabled: true } } }
 
-pub use hardware::*;
-pub use device::*;
+pub struct hardware { config: Config }
+impl hardware {
+    pub fn new(config: Config) -> Self { Self { config } }
+    pub fn initialize(&mut self) -> Result<()> { Ok(()) }
+}

@@ -1,17 +1,14 @@
 [package]
-name = "sigmaos-hardware"
+name = "hardware"
 version = "0.1.0"
 edition = "2021"
-authors = ["SigmaOS Project"]
-description = "Hardware abstraction and device management"
-license = "GPL-3.0-or-later"
+description = "SigmaOS SigmaOS-hardware"
+license = "MIT"
 repository = "https://github.com/AaryanSinghChauhan09/SigmaOS-hardware"
-readme = "README.md"
-keywords = ["hardware", "device", "abstraction"]
-categories = ["hardware-support"]
 
 [dependencies]
-sigmaos-kernel = { version = "0.1", path = "../SigmaOS-kernel" }
-
-[profile.release]
-opt-level = 3
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
