@@ -1,0 +1,8 @@
+[component]
+name = "SigmaOS-hardware"
+version = "0.1.0"
+maturity = "alpha"
+tier = 2
+owner = "SigmaOS Team"
+purpose = "Device detection, ACPI, and hardware abstraction layer"
+dependencies = ["SigmaOS-kernel"]
