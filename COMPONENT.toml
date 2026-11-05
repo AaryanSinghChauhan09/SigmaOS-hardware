@@ -1,8 +1,16 @@
 [component]
 name = "SigmaOS-hardware"
-version = "0.1.0"
-maturity = "alpha"
-tier = 2
-owner = "SigmaOS Team"
-purpose = "Device detection, ACPI, and hardware abstraction layer"
-dependencies = ["SigmaOS-kernel"]
+tier = 1
+stability = "scaffold"
+language = "rust"
+description = "ACPI parsing, PCI device enumeration, touchpad gestures, and hardware power profile controller"
+upstream = ["https://github.com/pop-os/system76-power"]
+
+[contract]
+provides = ["hardware-discovery", "acpi-parser", "power-profiles"]
+depends_on = []
+
+[maturity]
+status = "Scaffold"
+test_evidence = "Compiles and passes AAA unit tests"
+next_milestone = "Hardware and runtime integration"
