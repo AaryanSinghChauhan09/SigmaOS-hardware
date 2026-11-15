@@ -41,7 +41,7 @@ impl DeviceClass {
 /// A discovered hardware device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
-    pub name: String,          // e.g. "0000:00:1f.2", "cpu0", "sda"
+    pub name: String, // e.g. "0000:00:1f.2", "cpu0", "sda"
     pub class: DeviceClass,
     pub vendor_id: Option<u16>, // PCI/USB vendor
     pub device_id: Option<u16>,
@@ -57,12 +57,15 @@ impl Device {
 
     /// sysfs `modalias`-style match: does `pattern` appear in modalias?
     pub fn matches_modalias(&self, pattern: &str) -> bool {
-        self.attrs.get("modalias")
+        self.attrs
+            .get("modalias")
             .map(|m| m.contains(pattern))
             .unwrap_or(false)
     }
 
-    pub fn has_driver(&self) -> bool { self.driver.is_some() }
+    pub fn has_driver(&self) -> bool {
+        self.driver.is_some()
+    }
 
     /// PCI class code (class/subclass/prog-if) if present.
     pub fn pci_class(&self) -> Option<(u8, u8, u8)> {
@@ -105,7 +108,9 @@ pub struct HardwareInventory {
 }
 
 impl HardwareInventory {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Register a discovered device.
     pub fn add(&mut self, dev: Device) -> Result<(), HwError> {
@@ -116,7 +121,9 @@ impl HardwareInventory {
         Ok(())
     }
 
-    pub fn get(&self, name: &str) -> Option<&Device> { self.devices.get(name) }
+    pub fn get(&self, name: &str) -> Option<&Device> {
+        self.devices.get(name)
+    }
 
     pub fn by_class(&self, class: DeviceClass) -> Vec<&Device> {
         self.devices.values().filter(|d| d.class == class).collect()
@@ -129,19 +136,24 @@ impl HardwareInventory {
 
     /// Total memory from "memory"-class devices reporting size attrs.
     pub fn total_memory_bytes(&self) -> u64 {
-        self.by_class(DeviceClass::Memory).iter()
+        self.by_class(DeviceClass::Memory)
+            .iter()
             .filter_map(|d| d.attr_u64("size"))
             .sum()
     }
 
     /// CPU count from cpu-class devices.
-    pub fn cpu_count(&self) -> usize { self.by_class(DeviceClass::Cpu).len() }
+    pub fn cpu_count(&self) -> usize {
+        self.by_class(DeviceClass::Cpu).len()
+    }
 
     /// Refresh inventory from a probe: adds new devices, updates attrs
     /// of existing ones, marks vanished devices by removing them.
-    pub fn refresh<P: DeviceProbe>(&mut self, probe: &P,
-        classes: &[DeviceClass]) -> Result<usize, HwError>
-    {
+    pub fn refresh<P: DeviceProbe>(
+        &mut self,
+        probe: &P,
+        classes: &[DeviceClass],
+    ) -> Result<usize, HwError> {
         let mut seen = 0;
         for &class in classes {
             for dev in probe.devices(class) {
@@ -151,7 +163,9 @@ impl HardwareInventory {
                         existing.driver = dev.driver.clone();
                         existing.attrs.extend(dev.attrs.clone());
                     }
-                    None => { self.add(dev)?; }
+                    None => {
+                        self.add(dev)?;
+                    }
                 }
                 seen += 1;
             }
@@ -182,8 +196,10 @@ mod tests {
 
     fn cpu(name: &str, driver: Option<&str>) -> Device {
         Device {
-            name: name.into(), class: DeviceClass::Cpu,
-            vendor_id: None, device_id: None,
+            name: name.into(),
+            class: DeviceClass::Cpu,
+            vendor_id: None,
+            device_id: None,
             driver: driver.map(String::from),
             attrs: BTreeMap::from([("cpuinfo_max_freq".into(), "3400000".into())]),
         }
@@ -191,8 +207,11 @@ mod tests {
 
     fn mem(name: &str, kb: u64) -> Device {
         Device {
-            name: name.into(), class: DeviceClass::Memory,
-            vendor_id: None, device_id: None, driver: None,
+            name: name.into(),
+            class: DeviceClass::Memory,
+            vendor_id: None,
+            device_id: None,
+            driver: None,
             attrs: BTreeMap::from([("size".into(), (kb * 1024).to_string())]),
         }
     }
@@ -203,7 +222,10 @@ mod tests {
         let mut inv = HardwareInventory::new();
         // Act & Assert
         inv.add(cpu("cpu0", Some("intel_pstate"))).unwrap();
-        assert!(matches!(inv.add(cpu("cpu0", None)), Err(HwError::DuplicateDevice(_))));
+        assert!(matches!(
+            inv.add(cpu("cpu0", None)),
+            Err(HwError::DuplicateDevice(_))
+        ));
         assert_eq!(inv.cpu_count(), 1);
     }
 
@@ -240,7 +262,8 @@ mod tests {
     fn test_attr_u64_and_modalias_match_aaa() {
         // Arrange
         let mut d = cpu("cpu0", None);
-        d.attrs.insert("modalias".into(), "pci:v00008086d1234".into());
+        d.attrs
+            .insert("modalias".into(), "pci:v00008086d1234".into());
         // Act & Assert
         assert_eq!(d.attr_u64("cpuinfo_max_freq"), Some(3_400_000));
         assert!(d.matches_modalias("v00008086"));
@@ -256,7 +279,7 @@ mod tests {
         d.attrs.insert("class".into(), "0x030000".into());
         // Act: attr stored as hex string won't parse u64 decimal — use decimal form
         d.attrs.insert("class".into(), "196608".into()); // 0x30000
-        // Assert
+                                                         // Assert
         assert_eq!(d.pci_class(), Some((3, 0, 0)));
     }
 
@@ -268,14 +291,19 @@ mod tests {
             fn devices(&self, c: DeviceClass) -> Vec<Device> {
                 match c {
                     DeviceClass::Net => vec![Device {
-                        name: "eth0".into(), class: c, vendor_id: None,
-                        device_id: None, driver: Some("e1000e".into()),
+                        name: "eth0".into(),
+                        class: c,
+                        vendor_id: None,
+                        device_id: None,
+                        driver: Some("e1000e".into()),
                         attrs: BTreeMap::new(),
                     }],
                     _ => vec![],
                 }
             }
-            fn read_attr(&self, _d: &str, _k: &str) -> Option<String> { None }
+            fn read_attr(&self, _d: &str, _k: &str) -> Option<String> {
+                None
+            }
         }
         let mut inv = HardwareInventory::new();
         // Act
@@ -287,11 +315,17 @@ mod tests {
     #[test]
     fn test_sysfs_path_helpers_aaa() {
         // Arrange & Act & Assert
-        assert_eq!(sysfs::pci_dev_path("0000:00:1f.2", "vendor"),
-            "/sys/bus/pci/devices/0000:00:1f.2/vendor");
-        assert_eq!(sysfs::net_dev_path("eth0", "operstate"),
-            "/sys/class/net/eth0/operstate");
-        assert_eq!(sysfs::cpu_path(3, "online"),
-            "/sys/devices/system/cpu/cpu3/online");
+        assert_eq!(
+            sysfs::pci_dev_path("0000:00:1f.2", "vendor"),
+            "/sys/bus/pci/devices/0000:00:1f.2/vendor"
+        );
+        assert_eq!(
+            sysfs::net_dev_path("eth0", "operstate"),
+            "/sys/class/net/eth0/operstate"
+        );
+        assert_eq!(
+            sysfs::cpu_path(3, "online"),
+            "/sys/devices/system/cpu/cpu3/online"
+        );
     }
 }
