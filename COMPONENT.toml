@@ -1,16 +1,16 @@
 [component]
 name = "SigmaOS-hardware"
-tier = 1
-stability = "beta"
+tier = 2
+stability = "scaffold"
 language = "rust"
-description = "Hardware component for SigmaOS"
-upstream = ["https://github.com/pop-os/system76-power"]
+description = "Hardware manager for SigmaOS hardware detection and management"
+upstream = []
 
 [contract]
-provides = ["hardware-discovery", "acpi-parser", "power-profiles"]
-depends_on = ["SigmaOS-system"]
+provides = ["component"]
+depends_on = []
 
 [maturity]
-status = "Implemented"
+status = "Scaffold"
 test_evidence = "Compiles and passes AAA unit tests"
 next_milestone = "Hardware and runtime integration"

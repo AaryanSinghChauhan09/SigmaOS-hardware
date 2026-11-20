@@ -1,17 +1,10 @@
-use sigmaos_hardware::{Device, DeviceClass, HardwareInventory};
-use std::collections::BTreeMap;
+//! Integration tests for SigmaOS-hardware.
+
+use sigmaos_hardware_lib::{Component, ComponentLifecycle};
 
 #[test]
-fn component_constructs_and_inventories() {
-    let mut inv = HardwareInventory::new();
-    inv.add(Device {
-        name: "cpu0".into(),
-        class: DeviceClass::Cpu,
-        vendor_id: None,
-        device_id: None,
-        driver: Some("intel_pstate".into()),
-        attrs: BTreeMap::new(),
-    })
-    .unwrap();
-    assert_eq!(inv.cpu_count(), 1);
+fn component_initialises_and_runs() {
+    let mut c = Component::new();
+    c.init().expect("init should succeed");
+    c.run().expect("run should succeed after init");
 }

@@ -1,16 +1,30 @@
 # SigmaOS-hardware
 
-> **SigmaOS Hardware Integration Layer** — ACPI parsing, device enumeration, power profiles, and touchpad gestures.
+Hardware manager for SigmaOS hardware detection and management
 
-Part of the [SigmaOS](https://github.com/AaryanSinghChauhan09/SigmaOS) ecosystem.
+- **Category:** hardware
+- **Engine:** hardware
+- **Tier:** 2
+- **Language:** Rust
+- **Provides:** component
 
-## Quickstart
+Part of the [SigmaOS](https://github.com/AaryanSinghChauhan09/SigmaOS)
+multi-repository component ecosystem.
 
-```bash
-cargo build --release
+## Build & Test
+
+```sh
+cargo build
 cargo test
 ```
 
-## Documentation
+## Contract
 
-Full documentation, architecture guides, and roadmaps are maintained on the [SigmaOS GitHub Wiki](https://github.com/AaryanSinghChauhan09/SigmaOS/wiki).
+This component declares its interface in `COMPONENT.toml`:
+
+- `provides` — capabilities other components may depend on
+- `depends_on` — component names this component requires
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).

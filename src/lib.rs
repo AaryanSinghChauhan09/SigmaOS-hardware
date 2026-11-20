@@ -1,192 +1,238 @@
-//! SigmaOS-hardware: hardware inventory model — devices discovered via
-//! sysfs (`/sys/devices`, `/sys/bus/*`), their attributes, and capability
-//! queries. Deterministic and std-only; a `DeviceProbe` trait abstracts
-//! the actual filesystem so tests use fakes.
+//! SigmaOS-hardware — Hardware manager for SigmaOS hardware detection and management
+//!
+//! Part of the SigmaOS multi-repository component ecosystem. This crate
+//! declares its interface in `COMPONENT.toml` (`provides` / `depends_on`).
 
-use std::collections::BTreeMap;
-use std::fmt;
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
-/// Device classes matching sysfs `subsystem` values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum DeviceClass {
-    Cpu,
-    Memory,
-    Pci,
-    Usb,
-    Block,
-    Net,
-    Input,
-    Gpu,
-    Firmware,
-    Other,
+/// Errors raised by this component.
+#[derive(Debug, thiserror::Error)]
+pub enum ComponentError {
+    /// The requested operation is not supported by this component yet.
+    #[error("unsupported operation: {0}")]
+    Unsupported(&'static str),
+    /// A component with this name is already registered.
+    #[error("duplicate component: {0}")]
+    Duplicate(String),
+    /// A declared dependency is not present in the registry.
+    #[error("missing dependency '{dep}' required by '{component}'")]
+    MissingDependency {
+        /// The component that declared the dependency.
+        component: String,
+        /// The dependency name that could not be resolved.
+        dep: String,
+    },
+    /// The declared dependencies form a cycle and cannot be ordered.
+    #[error("dependency cycle detected involving '{0}'")]
+    DependencyCycle(String),
+    /// The named component is not registered.
+    #[error("unknown component: {0}")]
+    UnknownComponent(String),
 }
 
-impl DeviceClass {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "cpu" => Self::Cpu,
-            "memory" => Self::Memory,
-            "pci" => Self::Pci,
-            "usb" => Self::Usb,
-            "block" => Self::Block,
-            "net" => Self::Net,
-            "input" => Self::Input,
-            "gpu" | "drm" => Self::Gpu,
-            "firmware" => Self::Firmware,
-            _ => Self::Other,
+/// Result alias for component operations.
+pub type ComponentResult<T> = Result<T, ComponentError>;
+
+/// The lifecycle contract every SigmaOS component fulfils.
+///
+/// Depending on this trait (rather than a concrete type) is what lets the hub
+/// and other components treat any component polymorphically — interface
+/// segregation + dependency inversion in one place.
+pub trait ComponentLifecycle {
+    /// Initialise the component. Returns `Ok(())` once ready.
+    fn init(&mut self) -> ComponentResult<()>;
+    /// Run the component's primary operation.
+    fn run(&self) -> ComponentResult<()>;
+    /// Release resources. Must be idempotent and safe to call when not ready.
+    fn shutdown(&mut self) -> ComponentResult<()>;
+    /// Whether the component has completed [`ComponentLifecycle::init`].
+    fn is_ready(&self) -> bool;
+}
+
+/// A handle to an initialised component instance.
+#[derive(Debug, Default, Clone)]
+pub struct Component {
+    initialised: bool,
+}
+
+impl Component {
+    /// Create a new, uninitialised component handle.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl ComponentLifecycle for Component {
+    fn init(&mut self) -> ComponentResult<()> {
+        self.initialised = true;
+        Ok(())
+    }
+
+    fn run(&self) -> ComponentResult<()> {
+        if !self.initialised {
+            return Err(ComponentError::Unsupported("not initialised"));
         }
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> ComponentResult<()> {
+        self.initialised = false;
+        Ok(())
+    }
+
+    fn is_ready(&self) -> bool {
+        self.initialised
     }
 }
 
-/// A discovered hardware device.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Device {
-    pub name: String, // e.g. "0000:00:1f.2", "cpu0", "sda"
-    pub class: DeviceClass,
-    pub vendor_id: Option<u16>, // PCI/USB vendor
-    pub device_id: Option<u16>,
-    pub driver: Option<String>,
-    pub attrs: BTreeMap<String, String>, // raw sysfs attributes
+/// Owns a set of [`ComponentLifecycle`] implementations and drives them in
+/// dependency order.
+///
+/// The registry only ever sees trait objects (`Box<dyn ComponentLifecycle>`),
+/// so any component — including components from other repositories — can be
+/// composed without the registry knowing their concrete types (dependency
+/// inversion). `init_all` topologically sorts by declared dependencies and
+/// `shutdown_all` tears down in reverse order; both fail fast on missing
+/// dependencies or cycles rather than booting a half-wired system.
+#[derive(Default)]
+pub struct ComponentRegistry {
+    /// name -> component instance
+    components: std::collections::BTreeMap<String, Box<dyn ComponentLifecycle>>,
+    /// name -> names this component declared it depends on
+    dependencies: std::collections::BTreeMap<String, Vec<String>>,
 }
 
-impl Device {
-    /// Read a numeric attribute with a default.
-    pub fn attr_u64(&self, key: &str) -> Option<u64> {
-        self.attrs.get(key)?.trim().parse().ok()
-    }
-
-    /// sysfs `modalias`-style match: does `pattern` appear in modalias?
-    pub fn matches_modalias(&self, pattern: &str) -> bool {
-        self.attrs
-            .get("modalias")
-            .map(|m| m.contains(pattern))
-            .unwrap_or(false)
-    }
-
-    pub fn has_driver(&self) -> bool {
-        self.driver.is_some()
-    }
-
-    /// PCI class code (class/subclass/prog-if) if present.
-    pub fn pci_class(&self) -> Option<(u8, u8, u8)> {
-        let v = self.attr_u64("class")?;
-        Some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HwError {
-    DuplicateDevice(String),
-    NotFound(String),
-    BadAttr { device: String, key: String },
-}
-
-impl fmt::Display for HwError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DuplicateDevice(n) => write!(f, "device {} already inventoried", n),
-            Self::NotFound(n) => write!(f, "device {} not found", n),
-            Self::BadAttr { device, key } => write!(f, "device {}: bad attribute {}", device, key),
-        }
-    }
-}
-
-impl std::error::Error for HwError {}
-
-/// Abstraction over device discovery (sysfs walk, dmidecode, etc.).
-pub trait DeviceProbe {
-    /// All devices of a class currently visible.
-    fn devices(&self, class: DeviceClass) -> Vec<Device>;
-    /// Read one sysfs attribute; None if absent.
-    fn read_attr(&self, device: &str, key: &str) -> Option<String>;
-}
-
-/// The hardware inventory.
-#[derive(Debug, Default)]
-pub struct HardwareInventory {
-    devices: BTreeMap<String, Device>, // keyed by name
-}
-
-impl HardwareInventory {
+impl ComponentRegistry {
+    /// Create an empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Register a discovered device.
-    pub fn add(&mut self, dev: Device) -> Result<(), HwError> {
-        if self.devices.contains_key(&dev.name) {
-            return Err(HwError::DuplicateDevice(dev.name));
+    /// Register `component` under `name`.
+    ///
+    /// `depends_on` lists the *names* of other components that must be
+    /// initialised first. Dependencies may be registered after this call —
+    /// ordering is resolved lazily by [`ComponentRegistry::init_all`].
+    pub fn register(
+        &mut self,
+        name: impl Into<String>,
+        depends_on: &[&str],
+        component: impl ComponentLifecycle + 'static,
+    ) -> ComponentResult<()> {
+        let name = name.into();
+        if self.components.contains_key(&name) {
+            return Err(ComponentError::Duplicate(name));
         }
-        self.devices.insert(dev.name.clone(), dev);
+        self.dependencies.insert(
+            name.clone(),
+            depends_on.iter().map(|d| (*d).to_string()).collect(),
+        );
+        self.components.insert(name, Box::new(component));
         Ok(())
     }
 
-    pub fn get(&self, name: &str) -> Option<&Device> {
-        self.devices.get(name)
+    /// Borrow a registered component by name.
+    pub fn get(&self, name: &str) -> Option<&dyn ComponentLifecycle> {
+        self.components.get(name).map(|c| c.as_ref())
     }
 
-    pub fn by_class(&self, class: DeviceClass) -> Vec<&Device> {
-        self.devices.values().filter(|d| d.class == class).collect()
+    /// Number of registered components.
+    pub fn len(&self) -> usize {
+        self.components.len()
     }
 
-    /// Devices with no bound driver — candidates for module loading.
-    pub fn unbound(&self) -> Vec<&Device> {
-        self.devices.values().filter(|d| !d.has_driver()).collect()
+    /// Whether the registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty()
     }
 
-    /// Total memory from "memory"-class devices reporting size attrs.
-    pub fn total_memory_bytes(&self) -> u64 {
-        self.by_class(DeviceClass::Memory)
-            .iter()
-            .filter_map(|d| d.attr_u64("size"))
-            .sum()
-    }
+    /// Compute dependency-safe init order via DFS with cycle detection.
+    fn init_order(&self) -> ComponentResult<Vec<String>> {
+        let mut order = Vec::with_capacity(self.components.len());
+        let mut state: std::collections::BTreeMap<&str, u8> =
+            std::collections::BTreeMap::new(); // 0=unvisited 1=in-stack 2=done
 
-    /// CPU count from cpu-class devices.
-    pub fn cpu_count(&self) -> usize {
-        self.by_class(DeviceClass::Cpu).len()
-    }
-
-    /// Refresh inventory from a probe: adds new devices, updates attrs
-    /// of existing ones, marks vanished devices by removing them.
-    pub fn refresh<P: DeviceProbe>(
-        &mut self,
-        probe: &P,
-        classes: &[DeviceClass],
-    ) -> Result<usize, HwError> {
-        let mut seen = 0;
-        for &class in classes {
-            for dev in probe.devices(class) {
-                match self.devices.get_mut(&dev.name) {
-                    Some(existing) => {
-                        // update mutable fields only (driver may bind later)
-                        existing.driver = dev.driver.clone();
-                        existing.attrs.extend(dev.attrs.clone());
+        fn visit<'a>(
+            name: &'a str,
+            deps: &'a std::collections::BTreeMap<String, Vec<String>>,
+            state: &mut std::collections::BTreeMap<&'a str, u8>,
+            order: &mut Vec<String>,
+        ) -> ComponentResult<()> {
+            match state.get(name).copied().unwrap_or(0) {
+                2 => return Ok(()),
+                1 => return Err(ComponentError::DependencyCycle(name.to_string())),
+                _ => {}
+            }
+            state.insert(name, 1);
+            if let Some(list) = deps.get(name) {
+                for dep in list {
+                    if !deps.contains_key(dep) {
+                        return Err(ComponentError::MissingDependency {
+                            component: name.to_string(),
+                            dep: dep.clone(),
+                        });
                     }
-                    None => {
-                        self.add(dev)?;
-                    }
+                    visit(dep, deps, state, order)?;
                 }
-                seen += 1;
+            }
+            state.insert(name, 2);
+            order.push(name.to_string());
+            Ok(())
+        }
+
+        for name in self.components.keys() {
+            visit(name, &self.dependencies, &mut state, &mut order)?;
+        }
+        Ok(order)
+    }
+
+    /// Initialise every component in dependency order.
+    ///
+    /// Fails fast: if any component fails to init, already-initialised
+    /// components are shut down (reverse order) before the error returns,
+    /// so the registry never reports a half-ready fleet.
+    pub fn init_all(&mut self) -> ComponentResult<()> {
+        let order = self.init_order()?;
+        let mut done = 0usize;
+        for name in &order {
+            if let Some(c) = self.components.get_mut(name) {
+                if let Err(e) = c.init() {
+                    // Roll back what we started, newest first.
+                    for prev in order[..done].iter().rev() {
+                        if let Some(p) = self.components.get_mut(prev) {
+                            let _ = p.shutdown();
+                        }
+                    }
+                    return Err(e);
+                }
+                done += 1;
             }
         }
-        Ok(seen)
+        Ok(())
     }
-}
 
-/// sysfs path helpers — pure functions for building paths.
-pub mod sysfs {
-    /// `/sys/bus/pci/devices/0000:00:1f.2/...`
-    pub fn pci_dev_path(bdf: &str, attr: &str) -> String {
-        format!("/sys/bus/pci/devices/{}/{}", bdf, attr)
-    }
-    /// `/sys/class/net/eth0/...`
-    pub fn net_dev_path(iface: &str, attr: &str) -> String {
-        format!("/sys/class/net/{}/{}", iface, attr)
-    }
-    /// `/sys/devices/system/cpu/cpu0/...`
-    pub fn cpu_path(cpu: u32, attr: &str) -> String {
-        format!("/sys/devices/system/cpu/cpu{}/{}", cpu, attr)
+    /// Shut down every component in reverse dependency order.
+    ///
+    /// Individual shutdown failures are collected and reported as
+    /// [`ComponentError::Unsupported`]; shutdown is best-effort because a
+    /// component may already be partially torn down.
+    pub fn shutdown_all(&mut self) -> ComponentResult<()> {
+        let order = self.init_order()?;
+        let mut first_err = None;
+        for name in order.iter().rev() {
+            if let Some(c) = self.components.get_mut(name) {
+                if let Err(e) = c.shutdown() {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
@@ -194,138 +240,206 @@ pub mod sysfs {
 mod tests {
     use super::*;
 
-    fn cpu(name: &str, driver: Option<&str>) -> Device {
-        Device {
-            name: name.into(),
-            class: DeviceClass::Cpu,
-            vendor_id: None,
-            device_id: None,
-            driver: driver.map(String::from),
-            attrs: BTreeMap::from([("cpuinfo_max_freq".into(), "3400000".into())]),
-        }
-    }
-
-    fn mem(name: &str, kb: u64) -> Device {
-        Device {
-            name: name.into(),
-            class: DeviceClass::Memory,
-            vendor_id: None,
-            device_id: None,
-            driver: None,
-            attrs: BTreeMap::from([("size".into(), (kb * 1024).to_string())]),
-        }
-    }
-
+    // Arrange-Act-Assert
     #[test]
-    fn test_add_and_duplicate_rejected_aaa() {
+    fn init_marks_component_ready() {
         // Arrange
-        let mut inv = HardwareInventory::new();
-        // Act & Assert
-        inv.add(cpu("cpu0", Some("intel_pstate"))).unwrap();
-        assert!(matches!(
-            inv.add(cpu("cpu0", None)),
-            Err(HwError::DuplicateDevice(_))
-        ));
-        assert_eq!(inv.cpu_count(), 1);
-    }
+        let mut c = Component::new();
+        assert!(!c.is_ready());
 
-    #[test]
-    fn test_by_class_and_unbound_filter_aaa() {
-        // Arrange
-        let mut inv = HardwareInventory::new();
-        inv.add(cpu("cpu0", Some("x"))).unwrap();
-        let mut gpu = cpu("0000:01:00.0", None);
-        gpu.class = DeviceClass::Gpu;
-        inv.add(gpu).unwrap();
-        // Act & Assert
-        assert_eq!(inv.by_class(DeviceClass::Gpu).len(), 1);
-        assert_eq!(inv.unbound().len(), 1);
-        assert_eq!(inv.unbound()[0].name, "0000:01:00.0");
-    }
-
-    #[test]
-    fn test_memory_and_cpu_totals_aaa() {
-        // Arrange
-        let mut inv = HardwareInventory::new();
-        inv.add(mem("mem0", 8_000_000)).unwrap(); // 8GB in KB
-        inv.add(mem("mem1", 8_000_000)).unwrap();
-        inv.add(cpu("cpu0", None)).unwrap();
-        inv.add(cpu("cpu1", None)).unwrap();
-        inv.add(cpu("cpu2", None)).unwrap();
-        inv.add(cpu("cpu3", None)).unwrap();
-        // Act & Assert
-        assert_eq!(inv.total_memory_bytes(), 16_000_000 * 1024);
-        assert_eq!(inv.cpu_count(), 4);
-    }
-
-    #[test]
-    fn test_attr_u64_and_modalias_match_aaa() {
-        // Arrange
-        let mut d = cpu("cpu0", None);
-        d.attrs
-            .insert("modalias".into(), "pci:v00008086d1234".into());
-        // Act & Assert
-        assert_eq!(d.attr_u64("cpuinfo_max_freq"), Some(3_400_000));
-        assert!(d.matches_modalias("v00008086"));
-        assert!(!d.matches_modalias("v00001234"));
-        assert_eq!(d.attr_u64("nonexistent"), None);
-    }
-
-    #[test]
-    fn test_pci_class_decoding_aaa() {
-        // Arrange: class 0x030000 = display/VGA
-        let mut d = cpu("0000:01:00.0", None);
-        d.class = DeviceClass::Gpu;
-        d.attrs.insert("class".into(), "0x030000".into());
-        // Act: attr stored as hex string won't parse u64 decimal — use decimal form
-        d.attrs.insert("class".into(), "196608".into()); // 0x30000
-                                                         // Assert
-        assert_eq!(d.pci_class(), Some((3, 0, 0)));
-    }
-
-    #[test]
-    fn test_refresh_adds_and_updates_aaa() {
-        // Arrange
-        struct P;
-        impl DeviceProbe for P {
-            fn devices(&self, c: DeviceClass) -> Vec<Device> {
-                match c {
-                    DeviceClass::Net => vec![Device {
-                        name: "eth0".into(),
-                        class: c,
-                        vendor_id: None,
-                        device_id: None,
-                        driver: Some("e1000e".into()),
-                        attrs: BTreeMap::new(),
-                    }],
-                    _ => vec![],
-                }
-            }
-            fn read_attr(&self, _d: &str, _k: &str) -> Option<String> {
-                None
-            }
-        }
-        let mut inv = HardwareInventory::new();
         // Act
-        inv.refresh(&P, &[DeviceClass::Net]).unwrap();
+        c.init().unwrap();
+
         // Assert
-        assert_eq!(inv.get("eth0").unwrap().driver.as_deref(), Some("e1000e"));
+        assert!(c.is_ready());
     }
 
     #[test]
-    fn test_sysfs_path_helpers_aaa() {
-        // Arrange & Act & Assert
+    fn run_requires_init() {
+        // Arrange
+        let c = Component::new();
+
+        // Act
+        let res = c.run();
+
+        // Assert
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn shutdown_resets_readiness() {
+        // Arrange
+        let mut c = Component::new();
+        c.init().unwrap();
+        assert!(c.is_ready());
+
+        // Act
+        c.shutdown().unwrap();
+
+        // Assert
+        assert!(!c.is_ready());
+        assert!(c.run().is_err());
+    }
+
+    // Polymorphism: any ComponentLifecycle can be driven through the trait.
+    #[test]
+    fn lifecycle_works_through_trait_object() {
+        // Arrange
+        let mut c: Box<dyn ComponentLifecycle> = Box::new(Component::new());
+
+        // Act + Assert
+        assert!(!c.is_ready());
+        c.init().unwrap();
+        assert!(c.is_ready());
+        c.run().unwrap();
+        c.shutdown().unwrap();
+        assert!(!c.is_ready());
+    }
+
+    // ── ComponentRegistry ────────────────────────────────────────────────────
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Test double that records lifecycle calls into a shared log.
+    struct RecordingComponent {
+        log: Rc<RefCell<Vec<String>>>,
+        tag: &'static str,
+        fail_init: bool,
+    }
+
+    impl RecordingComponent {
+        fn new(tag: &'static str, log: &Rc<RefCell<Vec<String>>>) -> Self {
+            Self { log: log.clone(), tag, fail_init: false }
+        }
+        fn failing(tag: &'static str, log: &Rc<RefCell<Vec<String>>>) -> Self {
+            Self { log: log.clone(), tag, fail_init: true }
+        }
+    }
+
+    impl ComponentLifecycle for RecordingComponent {
+        fn init(&mut self) -> ComponentResult<()> {
+            self.log.borrow_mut().push(format!("init:{}", self.tag));
+            if self.fail_init {
+                return Err(ComponentError::Unsupported("forced init failure"));
+            }
+            Ok(())
+        }
+        fn run(&self) -> ComponentResult<()> {
+            Ok(())
+        }
+        fn shutdown(&mut self) -> ComponentResult<()> {
+            self.log.borrow_mut().push(format!("shutdown:{}", self.tag));
+            Ok(())
+        }
+        fn is_ready(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn registry_inits_in_dependency_order() {
+        // Arrange — consumer registered BEFORE its dependency to prove
+        // ordering comes from declarations, not registration sequence.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut reg = ComponentRegistry::new();
+        reg.register("consumer", &["provider"], RecordingComponent::new("consumer", &log)).unwrap();
+        reg.register("provider", &[], RecordingComponent::new("provider", &log)).unwrap();
+
+        // Act
+        reg.init_all().unwrap();
+
+        // Assert
         assert_eq!(
-            sysfs::pci_dev_path("0000:00:1f.2", "vendor"),
-            "/sys/bus/pci/devices/0000:00:1f.2/vendor"
+            *log.borrow(),
+            vec!["init:provider".to_string(), "init:consumer".to_string()]
         );
+    }
+
+    #[test]
+    fn registry_shutdown_runs_in_reverse_order() {
+        // Arrange
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut reg = ComponentRegistry::new();
+        reg.register("a", &[], RecordingComponent::new("a", &log)).unwrap();
+        reg.register("b", &["a"], RecordingComponent::new("b", &log)).unwrap();
+        reg.init_all().unwrap();
+        log.borrow_mut().clear();
+
+        // Act
+        reg.shutdown_all().unwrap();
+
+        // Assert — b depends on a, so b shuts down first
         assert_eq!(
-            sysfs::net_dev_path("eth0", "operstate"),
-            "/sys/class/net/eth0/operstate"
+            *log.borrow(),
+            vec!["shutdown:b".to_string(), "shutdown:a".to_string()]
         );
+    }
+
+    #[test]
+    fn registry_rejects_missing_dependency() {
+        // Arrange
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut reg = ComponentRegistry::new();
+        reg.register("app", &["ghost"], RecordingComponent::new("app", &log)).unwrap();
+
+        // Act
+        let res = reg.init_all();
+
+        // Assert
+        assert!(matches!(res, Err(ComponentError::MissingDependency { .. })));
+    }
+
+    #[test]
+    fn registry_rejects_dependency_cycle() {
+        // Arrange
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut reg = ComponentRegistry::new();
+        reg.register("x", &["y"], RecordingComponent::new("x", &log)).unwrap();
+        reg.register("y", &["x"], RecordingComponent::new("y", &log)).unwrap();
+
+        // Act
+        let res = reg.init_all();
+
+        // Assert
+        assert!(matches!(res, Err(ComponentError::DependencyCycle(_))));
+    }
+
+    #[test]
+    fn registry_rejects_duplicate_names() {
+        // Arrange
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut reg = ComponentRegistry::new();
+        reg.register("dup", &[], RecordingComponent::new("dup", &log)).unwrap();
+
+        // Act
+        let res = reg.register("dup", &[], RecordingComponent::new("dup2", &log));
+
+        // Assert
+        assert!(matches!(res, Err(ComponentError::Duplicate(_))));
+    }
+
+    #[test]
+    fn registry_rolls_back_partial_init_on_failure() {
+        // Arrange — provider inits fine, consumer fails: provider must be
+        // shut down so the fleet is not left half-ready.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut reg = ComponentRegistry::new();
+        reg.register("provider", &[], RecordingComponent::new("provider", &log)).unwrap();
+        reg.register("consumer", &["provider"], RecordingComponent::failing("consumer", &log)).unwrap();
+
+        // Act
+        let res = reg.init_all();
+
+        // Assert
+        assert!(res.is_err());
         assert_eq!(
-            sysfs::cpu_path(3, "online"),
-            "/sys/devices/system/cpu/cpu3/online"
+            *log.borrow(),
+            vec![
+                "init:provider".to_string(),
+                "init:consumer".to_string(),
+                "shutdown:provider".to_string(),
+            ]
         );
     }
 }
