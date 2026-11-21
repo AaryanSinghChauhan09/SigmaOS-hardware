@@ -450,3 +450,6 @@ mod tests {
 
 /// Module extracted from the SigmaOS-system monolith.
 pub mod sigmahardwareprofiler;
+
+/// Module extracted from the SigmaOS-system monolith.
+pub mod omarchy_atreyu_system_plugin;
