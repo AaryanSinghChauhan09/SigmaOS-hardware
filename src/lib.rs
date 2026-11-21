@@ -6,6 +6,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Hardware monitoring: sensors, temps, fans, voltages.
+pub mod sigmahwmon;
+
 /// Errors raised by this component.
 pub mod sigmahardwaremanager;
 #[derive(Debug, thiserror::Error)]
